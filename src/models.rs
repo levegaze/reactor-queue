@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, sqlx::Type)]
+#[sqlx(type_name = "text")]
 pub enum JobStatus {
     Queued,
     Processing,
@@ -8,16 +10,16 @@ pub enum JobStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Job {
-    pub id: u64,
+    pub id: i64,
     pub name: String,
     pub status: JobStatus,
-    pub retry_count: u32,
-    pub max_retries: u32,
-    pub created_at: u64,        // Unix timestamp
-    pub started_at: Option<u64>, // Unix timestamp
-    pub completed_at: Option<u64>, // Unix timestamp
+    pub retry_count: i32,
+    pub max_retries: i32,
+    pub created_at: i64,        // Unix timestamp
+    pub started_at: Option<i64>, // Unix timestamp
+    pub completed_at: Option<i64>, // Unix timestamp
     pub failed_reason: Option<String>,
 }
 

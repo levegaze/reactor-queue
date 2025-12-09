@@ -1,5 +1,6 @@
 use actix_web::{web, App, HttpServer};
 use std::sync::Arc;
+use sqlx::postgres::PgPoolOptions;
 
 use crate::state::AppState;
 
@@ -10,8 +11,22 @@ pub mod api;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    // 1. Setup Shared State
-    let app_state = Arc::new(AppState::new());
+    // Load .env file
+    dotenvy::dotenv().ok();
+
+    // 1. Setup Database Connection Pool
+    let database_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set in .env file");
+
+    let db_pool = PgPoolOptions::new()
+        .max_connections(20)
+        .connect(&database_url)
+        .await
+        .expect("Failed to connect to database");
+
+    println!("Connected to database");
+
+    let app_state = Arc::new(AppState { db_pool });
 
     // 2. Spawn Worker Pool (4 workers)
     const NUM_WORKERS: usize = 4;
