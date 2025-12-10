@@ -1,6 +1,10 @@
 use actix_web::{web, App, HttpServer};
 use std::sync::Arc;
+use std::time::Duration;
 use sqlx::postgres::PgPoolOptions;
+use tokio::sync::broadcast;
+use tokio::task::JoinSet;
+use tokio::time::timeout;
 
 use crate::state::AppState;
 
@@ -26,29 +30,69 @@ async fn main() -> std::io::Result<()> {
 
     println!("Connected to database");
 
-    let app_state = Arc::new(AppState { db_pool });
+    // 2. Setup shutdown channel
+    let (shutdown_tx, _) = broadcast::channel(1);
 
-    // 2. Spawn Worker Pool (4 workers)
+    let app_state = Arc::new(AppState {
+        db_pool,
+        shutdown_tx: shutdown_tx.clone(),
+    });
+
+    // 3. Spawn Worker Pool with JoinSet
     const NUM_WORKERS: usize = 4;
+    let mut workers = JoinSet::new();
+
     for worker_id in 0..NUM_WORKERS {
         let worker_state = app_state.clone();
-        tokio::spawn(async move {
+        workers.spawn(async move {
             worker::run_worker(worker_id, worker_state).await;
         });
     }
 
-    // 3. Start Server
+    // 4. Start Server
     println!("Server running at http://127.0.0.1:8080");
     println!("Worker pool started with {} workers", NUM_WORKERS);
 
-    HttpServer::new(move || {
+    let server = HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(app_state.clone()))
-            // เรียกใช้ Handler จาก module api
             .route("/jobs", web::post().to(api::submit_job))
             .route("/jobs/{id}", web::get().to(api::get_job))
     })
     .bind(("127.0.0.1", 8080))?
-    .run()
-    .await
+    .run();
+
+    let server_handle = server.handle();
+    let server_task = tokio::spawn(server);
+
+    // 5. Wait for shutdown signal
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            println!("\nReceived shutdown signal (Ctrl+C)...");
+        }
+    }
+
+    // 6. Graceful shutdown
+    println!("Stopping server...");
+    server_handle.stop(true).await;
+
+    println!("Notifying workers to shutdown...");
+    let _ = shutdown_tx.send(());
+
+    println!("Waiting for workers to finish (timeout: 30s)...");
+    match timeout(Duration::from_secs(30), async {
+        while let Some(result) = workers.join_next().await {
+            if let Err(e) = result {
+                eprintln!("Worker error during shutdown: {}", e);
+            }
+        }
+    }).await {
+        Ok(_) => println!("All workers shutdown successfully"),
+        Err(_) => println!("Timeout reached, forcing shutdown"),
+    }
+
+    let _ = server_task.await;
+    println!("Shutdown complete");
+
+    Ok(())
 }

@@ -15,7 +15,14 @@ fn get_current_timestamp() -> i64 {
 pub async fn run_worker(worker_id: usize, data: Arc<AppState>) {
     println!("[Worker {}] Started and waiting for jobs...", worker_id);
 
+    let mut shutdown_rx = data.shutdown_tx.subscribe();
+
     loop {
+        // Check for shutdown signal
+        if shutdown_rx.try_recv().is_ok() {
+            println!("[Worker {}] Received shutdown signal, finishing current job...", worker_id);
+            break;
+        }
         // Dequeue job from database with SKIP LOCKED (atomic operation)
         let job_result = sqlx::query(
             r#"
@@ -117,4 +124,6 @@ pub async fn run_worker(worker_id: usize, data: Arc<AppState>) {
             }
         }
     }
+
+    println!("[Worker {}] Shutdown complete", worker_id);
 }
