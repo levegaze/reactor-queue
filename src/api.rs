@@ -1,4 +1,8 @@
-use actix_web::{web, HttpResponse, Responder};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::{IntoResponse, Json},
+};
 use std::sync::Arc;
 
 use crate::models::{Job, JobRequest};
@@ -6,9 +10,9 @@ use crate::state::AppState;
 
 // POST /jobs
 pub async fn submit_job(
-    data: web::Data<Arc<AppState>>,
-    req: web::Json<JobRequest>
-) -> impl Responder {
+    State(data): State<Arc<AppState>>,
+    Json(req): Json<JobRequest>,
+) -> impl IntoResponse {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -30,22 +34,20 @@ pub async fn submit_job(
     match result {
         Ok(job) => {
             println!("Received Job #{} ({})", job.id, job.name);
-            HttpResponse::Ok().json(job)
+            (StatusCode::OK, Json(job)).into_response()
         }
         Err(e) => {
             eprintln!("Failed to create job: {}", e);
-            HttpResponse::InternalServerError().body("Failed to create job")
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create job").into_response()
         }
     }
 }
 
 // GET /jobs/{id}
 pub async fn get_job(
-    data: web::Data<Arc<AppState>>,
-    path: web::Path<i64>
-) -> impl Responder {
-    let id = path.into_inner();
-
+    State(data): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
     let result = sqlx::query_as::<_, Job>(
         "SELECT id, name, status, retry_count, max_retries, created_at, started_at, completed_at, failed_reason FROM jobs WHERE id = $1"
     )
@@ -54,11 +56,11 @@ pub async fn get_job(
     .await;
 
     match result {
-        Ok(Some(job)) => HttpResponse::Ok().json(job),
-        Ok(None) => HttpResponse::NotFound().body("Job not found"),
+        Ok(Some(job)) => (StatusCode::OK, Json(job)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "Job not found").into_response(),
         Err(e) => {
             eprintln!("Database error: {}", e);
-            HttpResponse::InternalServerError().body("Database error")
+            (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response()
         }
     }
 }

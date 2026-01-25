@@ -1,10 +1,14 @@
-use actix_web::{web, App, HttpServer};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use std::sync::Arc;
 use std::time::Duration;
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
+use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
 
@@ -49,33 +53,31 @@ async fn main() -> std::io::Result<()> {
         });
     }
 
-    // 4. Start Server
-    println!("Server running at http://127.0.0.1:8080");
+    // 4. Build Router
+    let app = Router::new()
+        .route("/jobs", post(api::submit_job))
+        .route("/jobs/:id", get(api::get_job))
+        .with_state(app_state.clone())
+        .layer(TraceLayer::new_for_http());
+
+    // 5. Start Server
+    let addr = "127.0.0.1:8080";
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    println!("Server running at http://{}", addr);
     println!("Worker pool started with {} workers", NUM_WORKERS);
 
-    let server = HttpServer::new(move || {
-        App::new()
-            .app_data(web::Data::new(app_state.clone()))
-            .route("/jobs", web::post().to(api::submit_job))
-            .route("/jobs/{id}", web::get().to(api::get_job))
-    })
-    .bind(("127.0.0.1", 8080))?
-    .run();
+    let server_task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
 
-    let server_handle = server.handle();
-    let server_task = tokio::spawn(server);
-
-    // 5. Wait for shutdown signal
+    // 6. Wait for shutdown signal
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             println!("\nReceived shutdown signal (Ctrl+C)...");
         }
     }
 
-    // 6. Graceful shutdown
-    println!("Stopping server...");
-    server_handle.stop(true).await;
-
+    // 7. Graceful shutdown
     println!("Notifying workers to shutdown...");
     let _ = shutdown_tx.send(());
 
@@ -91,6 +93,7 @@ async fn main() -> std::io::Result<()> {
         Err(_) => println!("Timeout reached, forcing shutdown"),
     }
 
+    // Stop the server by dropping the listener (axum will gracefully shutdown)
     let _ = server_task.await;
     println!("Shutdown complete");
 
