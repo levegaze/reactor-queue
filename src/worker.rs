@@ -1,9 +1,8 @@
+use crate::models::Job;
+use crate::state::AppState;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use sqlx::Row;
-
-use crate::state::AppState;
 
 fn get_current_timestamp() -> i64 {
     std::time::SystemTime::now()
@@ -24,9 +23,11 @@ pub async fn run_worker(worker_id: usize, data: Arc<AppState>) {
             break;
         }
         // Dequeue job from database with SKIP LOCKED (atomic operation)
-        let job_result = sqlx::query(
+        let job_result = sqlx::query_as!(
+            Job,
             r#"
-            SELECT id FROM jobs
+            SELECT id, name, status as "status: crate::models::JobStatus", retry_count, max_retries, created_at, started_at, completed_at, failed_reason
+            FROM jobs
             WHERE status = 'Queued'
             ORDER BY created_at ASC
             LIMIT 1
@@ -37,17 +38,16 @@ pub async fn run_worker(worker_id: usize, data: Arc<AppState>) {
         .await;
 
         match job_result {
-            Ok(Some(row)) => {
-                let job_id: i64 = row.get("id");
-                println!("[Worker {}] Processing job #{}", worker_id, job_id);
+            Ok(Some(job)) => {
+                println!("[Worker {}] Processing job #{}", worker_id, job.id);
 
                 // Mark as Processing and set started_at timestamp
                 let now = get_current_timestamp();
-                sqlx::query(
-                    "UPDATE jobs SET status = 'Processing', started_at = $1 WHERE id = $2"
+                sqlx::query!(
+                    "UPDATE jobs SET status = 'Processing', started_at = $1 WHERE id = $2",
+                    now,
+                    job.id
                 )
-                .bind(now)
-                .bind(job_id)
                 .execute(&data.db_pool)
                 .await
                 .ok();
@@ -59,59 +59,47 @@ pub async fn run_worker(worker_id: usize, data: Arc<AppState>) {
                 let failed = rand::random::<f64>() < 0.3;
 
                 if failed {
-                    // Get current retry count
-                    let job = sqlx::query(
-                        "SELECT retry_count, max_retries FROM jobs WHERE id = $1"
-                    )
-                    .bind(job_id)
-                    .fetch_one(&data.db_pool)
-                    .await;
+                    let new_retry_count = job.retry_count + 1;
 
-                    if let Ok(job_row) = job {
-                        let retry_count: i32 = job_row.get("retry_count");
-                        let max_retries: i32 = job_row.get("max_retries");
+                    println!("[Worker {}] Job #{} failed! (retry {}/{})", worker_id, job.id, job.retry_count, job.max_retries);
 
-                        println!("[Worker {}] Job #{} failed! (retry {}/{})", worker_id, job_id, retry_count, max_retries);
+                    // Retry logic
+                    if new_retry_count <= job.max_retries {
+                        sqlx::query!(
+                            "UPDATE jobs SET status = 'Queued', retry_count = $1, started_at = NULL, failed_reason = NULL WHERE id = $2",
+                            new_retry_count,
+                            job.id
+                        )
+                        .execute(&data.db_pool)
+                        .await
+                        .ok();
 
-                        // Retry logic
-                        if retry_count < max_retries {
-                            let new_retry_count = retry_count + 1;
-                            sqlx::query(
-                                "UPDATE jobs SET status = 'Queued', retry_count = $1, started_at = NULL, failed_reason = NULL WHERE id = $2"
-                            )
-                            .bind(new_retry_count)
-                            .bind(job_id)
-                            .execute(&data.db_pool)
-                            .await
-                            .ok();
+                        println!("[Worker {}] Job #{} re-queued for retry {}/{}", worker_id, job.id, new_retry_count, job.max_retries);
+                    } else {
+                        sqlx::query!(
+                            "UPDATE jobs SET status = 'Failed', failed_reason = $1 WHERE id = $2",
+                            "Max retries exceeded",
+                            job.id
+                        )
+                        .execute(&data.db_pool)
+                        .await
+                        .ok();
 
-                            println!("[Worker {}] Job #{} re-queued for retry {}/{}", worker_id, job_id, new_retry_count, max_retries);
-                        } else {
-                            sqlx::query(
-                                "UPDATE jobs SET status = 'Failed', failed_reason = $1 WHERE id = $2"
-                            )
-                            .bind("Simulated random failure")
-                            .bind(job_id)
-                            .execute(&data.db_pool)
-                            .await
-                            .ok();
-
-                            println!("[Worker {}] Job #{} permanently failed after {} retries", worker_id, job_id, retry_count);
-                        }
+                        println!("[Worker {}] Job #{} permanently failed after {} retries", worker_id, job.id, new_retry_count);
                     }
                 } else {
                     // Job succeeded
                     let completed_at = get_current_timestamp();
-                    sqlx::query(
-                        "UPDATE jobs SET status = 'Completed', completed_at = $1 WHERE id = $2"
+                    sqlx::query!(
+                        "UPDATE jobs SET status = 'Completed', completed_at = $1 WHERE id = $2",
+                        completed_at,
+                        job.id
                     )
-                    .bind(completed_at)
-                    .bind(job_id)
                     .execute(&data.db_pool)
                     .await
                     .ok();
 
-                    println!("[Worker {}] Job #{} completed successfully!", worker_id, job_id);
+                    println!("[Worker {}] Job #{} completed successfully!", worker_id, job.id);
                 }
             }
             Ok(None) => {

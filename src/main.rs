@@ -56,7 +56,7 @@ async fn main() -> std::io::Result<()> {
     // 4. Build Router
     let app = Router::new()
         .route("/jobs", post(api::submit_job))
-        .route("/jobs/:id", get(api::get_job))
+        .route("/jobs/{id}", get(api::get_job))
         .with_state(app_state.clone())
         .layer(TraceLayer::new_for_http());
 

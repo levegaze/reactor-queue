@@ -18,16 +18,17 @@ pub async fn submit_job(
         .unwrap()
         .as_secs() as i64;
 
-    // Insert job into database
-    let result = sqlx::query_as::<_, Job>(
+    // Insert job into database with RETURNING clause
+    let result = sqlx::query_as!(
+        Job,
         r#"
         INSERT INTO jobs (name, status, retry_count, max_retries, created_at, started_at, completed_at, failed_reason)
         VALUES ($1, 'Queued', 0, 3, $2, NULL, NULL, NULL)
-        RETURNING id, name, status, retry_count, max_retries, created_at, started_at, completed_at, failed_reason
-        "#
+        RETURNING id, name, status as "status: crate::models::JobStatus", retry_count, max_retries, created_at, started_at, completed_at, failed_reason
+        "#,
+        req.name,
+        now
     )
-    .bind(&req.name)
-    .bind(now)
     .fetch_one(&data.db_pool)
     .await;
 
@@ -48,10 +49,12 @@ pub async fn get_job(
     State(data): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    let result = sqlx::query_as::<_, Job>(
-        "SELECT id, name, status, retry_count, max_retries, created_at, started_at, completed_at, failed_reason FROM jobs WHERE id = $1"
+    let result = sqlx::query_as!(
+        Job,
+        r#"SELECT id, name, status as "status: crate::models::JobStatus", retry_count, max_retries, created_at, started_at, completed_at, failed_reason
+        FROM jobs WHERE id = $1"#,
+        id
     )
-    .bind(id)
     .fetch_optional(&data.db_pool)
     .await;
 
